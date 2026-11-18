@@ -1,8 +1,9 @@
-"""Generate synthetic job data (if CSV is missing), embed, and bulk-insert into Postgres."""
+"""Generate synthetic job data (if CSV is missing), embed, and bulk-insert into SQLite."""
 
 from __future__ import annotations
 
 import csv
+import json
 import os
 import random
 import sys
@@ -17,22 +18,13 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 load_dotenv()
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session
-
-from app.db import Base, Job, VECTOR_DIM
+from app.db import get_conn, init_db, vec_to_blob
 from app.embeddings import embed_texts
-
-# Use sync driver for scripts
-DATABASE_URL_SYNC: str = os.getenv(
-    "DATABASE_URL_SYNC",
-    "postgresql+psycopg2://jobpilot:jobpilot_secret@db:5432/jobpilot",
-)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 CSV_PATH = DATA_DIR / "jobs.csv"
 
-# ── Synthetic data catalogue ───────────────────────────────────────
+# ── Synthetic data catalogue ───────────────────────────────────
 
 TITLES = {
     "backend": [
@@ -116,6 +108,7 @@ PERKS = [
 def generate_synthetic_csv(n: int = 2000) -> None:
     """Write ~n synthetic job rows to data/jobs.csv."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    random.seed(42)  # reproducible data
     rows: list[dict] = []
     categories = list(TITLES.keys())
 
@@ -143,18 +136,16 @@ def generate_synthetic_csv(n: int = 2000) -> None:
             perk=random.choice(PERKS),
         )
 
-        rows.append(
-            {
-                "title": title,
-                "company": company,
-                "location": location,
-                "description": desc,
-                "experience_years": exp,
-                "is_remote": is_remote,
-                "skills": "|".join(skills),
-                "posted_at": posted.isoformat(),
-            }
-        )
+        rows.append({
+            "title": title,
+            "company": company,
+            "location": location,
+            "description": desc,
+            "experience_years": exp,
+            "is_remote": is_remote,
+            "skills": "|".join(skills),
+            "posted_at": posted.isoformat(),
+        })
 
     with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
@@ -165,17 +156,17 @@ def generate_synthetic_csv(n: int = 2000) -> None:
 
 
 def clean_text(s: str) -> str:
-    """Collapse whitespace and strip."""
     return re.sub(r"\s+", " ", s).strip()
 
 
 def load() -> None:
     """Main loader: generate CSV if needed, embed, insert."""
+    init_db()
+
     if not CSV_PATH.exists():
         print("jobs.csv not found — generating synthetic data …")
         generate_synthetic_csv()
 
-    # Read CSV
     with open(CSV_PATH, encoding="utf-8") as f:
         reader = csv.DictReader(f)
         rows = list(reader)
@@ -184,59 +175,44 @@ def load() -> None:
     # Prepare text for embedding: title + description
     texts = [clean_text(f"{r['title']} — {r['description']}") for r in rows]
 
-    # Batch-embed
-    print("Embedding …")
+    print("Embedding (this may take a minute on first run) …")
     vectors = embed_texts(texts, batch_size=128)
 
-    # Insert into Postgres
-    engine = create_engine(DATABASE_URL_SYNC)
+    conn = get_conn()
+    # Clear existing data for idempotent loads
+    conn.execute("DELETE FROM jobs")
+    conn.commit()
 
-    # Ensure extension + tables exist
-    with engine.begin() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    for i, row in enumerate(rows):
+        skills_list = [s.strip() for s in row.get("skills", "").split("|") if s.strip()]
+        is_remote_val = row.get("is_remote", "False")
+        if isinstance(is_remote_val, str):
+            is_remote_val = is_remote_val.lower() in ("true", "1", "yes")
 
-    Base.metadata.create_all(engine)
-
-    # Create HNSW index
-    with engine.begin() as conn:
         conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS idx_jobs_embedding_hnsw "
-                "ON jobs USING hnsw (embedding vector_cosine_ops) "
-                "WITH (m = 16, ef_construction = 64)"
-            )
+            """INSERT INTO jobs (title, company, location, description,
+               experience_years, is_remote, skills, posted_at, embedding)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                clean_text(row["title"]),
+                clean_text(row["company"]),
+                clean_text(row.get("location", "")),
+                clean_text(row["description"]),
+                int(row.get("experience_years", 0)),
+                int(bool(is_remote_val)),
+                json.dumps(skills_list),
+                row.get("posted_at"),
+                vec_to_blob(vectors[i]),
+            ),
         )
 
-    with Session(engine) as session:
-        # Truncate for idempotent loads
-        session.execute(text("TRUNCATE TABLE jobs RESTART IDENTITY"))
-        session.commit()
+        if (i + 1) % 500 == 0:
+            conn.commit()
+            print(f"  Inserted {i + 1}/{len(rows)} …")
 
-        for i, row in enumerate(rows):
-            skills_list = [s.strip() for s in row.get("skills", "").split("|") if s.strip()]
-            is_remote_val = row.get("is_remote", "False")
-            if isinstance(is_remote_val, str):
-                is_remote_val = is_remote_val.lower() in ("true", "1", "yes")
-
-            job = Job(
-                title=clean_text(row["title"]),
-                company=clean_text(row["company"]),
-                location=clean_text(row.get("location", "")),
-                description=clean_text(row["description"]),
-                experience_years=int(row.get("experience_years", 0)),
-                is_remote=bool(is_remote_val),
-                skills=skills_list,
-                posted_at=row.get("posted_at"),
-                embedding=vectors[i].tolist(),
-            )
-            session.add(job)
-
-            if (i + 1) % 500 == 0:
-                session.commit()
-                print(f"  Inserted {i + 1}/{len(rows)} …")
-
-        session.commit()
-        print(f"✓ Loaded {len(rows)} jobs into Postgres.")
+    conn.commit()
+    conn.close()
+    print(f"✓ Loaded {len(rows)} jobs into SQLite ({os.getenv('DATABASE_PATH', 'data/jobpilot.db')}).")
 
 
 if __name__ == "__main__":
