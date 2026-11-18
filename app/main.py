@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -13,11 +13,9 @@ from app.db import init_db
 from app.schemas import (
     SearchRequest, SearchResponse,
     ChatRequest, ChatResponse,
-    ProfileResponse, ParsedProfile,
+    ProfileResponse,
 )
 from app.search import search_jobs
-from app.agent import run_agent
-from app.profile import parse_resume
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -54,19 +52,29 @@ async def upload_profile(
     file: UploadFile = File(...),
     user_id: str = Form("default"),
 ):
-    pdf_bytes = await file.read()
-    profile = parse_resume(pdf_bytes, user_id)
-    return ProfileResponse(
-        user_id=user_id,
-        profile=profile,
-        message="Resume parsed and profile saved successfully.",
-    )
+    try:
+        from app.profile import parse_resume
+        pdf_bytes = await file.read()
+        profile = parse_resume(pdf_bytes, user_id)
+        return ProfileResponse(
+            user_id=user_id,
+            profile=profile,
+            message="Resume parsed and profile saved successfully.",
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ── Chat (Agent) ───────────────────────────────────────────────
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    return run_agent(req.message, req.user_id)
+    try:
+        from app.agent import run_agent
+        return run_agent(req.message, req.user_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 # ── UI ──────────────────────────────────────────────────────────

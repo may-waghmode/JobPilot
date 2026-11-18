@@ -94,8 +94,15 @@ Return ONLY valid JSON: {{"relevance": N, "helpfulness": N, "coherence": N, "rea
 def _call_llm(prompt: str) -> str:
     """Route to the configured LLM provider."""
     if LLM_PROVIDER == "google":
+        if not GOOGLE_API_KEY or GOOGLE_API_KEY.startswith("your-"):
+            raise RuntimeError(
+                "GOOGLE_API_KEY is not set. Add a valid key to .env "
+                "(get one free at https://aistudio.google.com/apikey)"
+            )
         return _call_google(prompt)
     elif LLM_PROVIDER == "openai":
+        if not OPENAI_API_KEY or OPENAI_API_KEY.startswith("your-"):
+            raise RuntimeError("OPENAI_API_KEY is not set. Add a valid key to .env")
         return _call_openai(prompt)
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER}")
