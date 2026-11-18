@@ -6,7 +6,8 @@ dist/
 build/
 .venv/
 venv/
-*.csv
 model_cache/
 .mypy_cache/
 .pytest_cache/
+data/jobpilot.db
+evals/results/

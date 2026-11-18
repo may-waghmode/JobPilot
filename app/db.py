@@ -1,66 +1,91 @@
-"""Database connection and table definitions for JobPilot."""
+"""Database layer — SQLite with JSON columns for arrays, numpy for vectors."""
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import os
+from datetime import datetime
+from pathlib import Path
 
-from pgvector.sqlalchemy import Vector
-from sqlalchemy import (
-    Column,
-    Integer,
-    String,
-    Text,
-    Boolean,
-    DateTime,
-    func,
-    text,
-    ARRAY,
-)
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase
+from dotenv import load_dotenv
 
-DATABASE_URL: str = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://jobpilot:jobpilot_secret@db:5432/jobpilot",
-)
+load_dotenv()
 
-engine = create_async_engine(DATABASE_URL, echo=False, pool_size=10)
-async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-VECTOR_DIM = 384  # all-MiniLM-L6-v2 output size
+DB_PATH: str = os.getenv("DATABASE_PATH", "data/jobpilot.db")
 
 
-class Base(DeclarativeBase):
-    pass
+def _ensure_dir() -> None:
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 
-class Job(Base):
-    """Single job posting with its embedding vector."""
-
-    __tablename__ = "jobs"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    title = Column(String(256), nullable=False)
-    company = Column(String(256), nullable=False)
-    location = Column(String(256), nullable=False)
-    description = Column(Text, nullable=False)
-    experience_years = Column(Integer, default=0)
-    is_remote = Column(Boolean, default=False)
-    skills = Column(ARRAY(String), default=[])
-    posted_at = Column(DateTime(timezone=True), server_default=func.now())
-    embedding = Column(Vector(VECTOR_DIM))
+def get_conn() -> sqlite3.Connection:
+    """Return a new connection with row-factory enabled."""
+    _ensure_dir()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
 
 
-async def init_db() -> None:
-    """Create pgvector extension + tables + HNSW index."""
-    async with engine.begin() as conn:
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        await conn.run_sync(Base.metadata.create_all)
-        # HNSW index for fast cosine-similarity search
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS idx_jobs_embedding_hnsw "
-                "ON jobs USING hnsw (embedding vector_cosine_ops) "
-                "WITH (m = 16, ef_construction = 64)"
-            )
-        )
+def init_db() -> None:
+    """Create all tables if they don't exist."""
+    conn = get_conn()
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            title       TEXT    NOT NULL,
+            company     TEXT    NOT NULL,
+            location    TEXT    NOT NULL DEFAULT '',
+            description TEXT    NOT NULL,
+            experience_years INTEGER DEFAULT 0,
+            is_remote   INTEGER DEFAULT 0,
+            skills      TEXT    DEFAULT '[]',
+            posted_at   TEXT,
+            embedding   BLOB
+        );
+
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id             TEXT    NOT NULL DEFAULT 'default',
+            skills              TEXT    DEFAULT '[]',
+            years_experience    INTEGER DEFAULT 0,
+            roles               TEXT    DEFAULT '[]',
+            preferred_locations TEXT    DEFAULT '[]',
+            raw_text            TEXT    DEFAULT '',
+            created_at          TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS user_preferences (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     TEXT    NOT NULL DEFAULT 'default',
+            key         TEXT    NOT NULL,
+            value       TEXT    NOT NULL,
+            updated_at  TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS conversation_memory (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     TEXT    NOT NULL DEFAULT 'default',
+            summary     TEXT    DEFAULT '',
+            messages    TEXT    DEFAULT '[]',
+            updated_at  TEXT
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+# ── Helper: serialize / deserialize numpy arrays as bytes ───────
+import numpy as np
+
+
+def vec_to_blob(vec: np.ndarray) -> bytes:
+    return vec.astype(np.float32).tobytes()
+
+
+def blob_to_vec(blob: bytes) -> np.ndarray:
+    return np.frombuffer(blob, dtype=np.float32)

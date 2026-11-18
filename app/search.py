@@ -1,49 +1,83 @@
-"""Semantic search with pgvector cosine similarity + SQL filters."""
+"""Semantic search — numpy cosine similarity over SQLite-stored vectors."""
 
 from __future__ import annotations
 
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+import json
+import numpy as np
 
-from app.db import Job
+from app.db import get_conn, blob_to_vec
 from app.embeddings import embed_query
 from app.schemas import SearchRequest, JobResult
 
 
-async def search_jobs(session: AsyncSession, req: SearchRequest) -> list[JobResult]:
-    """Embed the query, run cosine search, apply filters, return ranked results."""
+def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
+    """Cosine similarity between two L2-normalised vectors (just dot product)."""
+    return float(np.dot(a, b))
+
+
+def search_jobs(req: SearchRequest) -> list[JobResult]:
+    """Embed the query, scan all job vectors, apply SQL filters, return top-k."""
     query_vec = embed_query(req.query)
 
-    # Build cosine-distance expression: 1 - distance = similarity
-    dist = Job.embedding.cosine_distance(query_vec).label("distance")
-
-    stmt = select(Job, dist).order_by(dist)
-
-    # Apply optional SQL filters
+    conn = get_conn()
+    # Build WHERE clause for SQL filters
+    clauses: list[str] = []
+    params: list = []
     if req.location:
-        stmt = stmt.where(Job.location.ilike(f"%{req.location}%"))
+        clauses.append("location LIKE ?")
+        params.append(f"%{req.location}%")
     if req.remote_only:
-        stmt = stmt.where(Job.is_remote.is_(True))
+        clauses.append("is_remote = 1")
     if req.max_experience is not None:
-        stmt = stmt.where(Job.experience_years <= req.max_experience)
+        clauses.append("experience_years <= ?")
+        params.append(req.max_experience)
 
-    stmt = stmt.limit(req.top_k)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = f"SELECT * FROM jobs {where}"
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
 
-    rows = await session.execute(stmt)
+    # Score every row by cosine similarity
+    scored: list[tuple[dict, float]] = []
+    for row in rows:
+        r = dict(row)
+        if r["embedding"] is None:
+            continue
+        job_vec = blob_to_vec(r["embedding"])
+        sim = _cosine_sim(query_vec, job_vec)
+        scored.append((r, sim))
+
+    # Sort descending by similarity, take top_k
+    scored.sort(key=lambda x: x[1], reverse=True)
+    scored = scored[: req.top_k]
+
     results: list[JobResult] = []
-    for job, distance in rows:
+    for r, sim in scored:
         results.append(
             JobResult(
-                id=job.id,
-                title=job.title,
-                company=job.company,
-                location=job.location,
-                description=job.description,
-                experience_years=job.experience_years,
-                is_remote=job.is_remote,
-                skills=job.skills or [],
-                posted_at=job.posted_at,
-                similarity=round(1 - distance, 4),  # cosine similarity
+                id=r["id"],
+                title=r["title"],
+                company=r["company"],
+                location=r["location"],
+                description=r["description"],
+                experience_years=r["experience_years"],
+                is_remote=bool(r["is_remote"]),
+                skills=json.loads(r["skills"]) if r["skills"] else [],
+                posted_at=r["posted_at"],
+                similarity=round(sim, 4),
             )
         )
     return results
+
+
+def search_jobs_by_ids(job_ids: list[int]) -> list[dict]:
+    """Fetch specific jobs by ID list."""
+    if not job_ids:
+        return []
+    conn = get_conn()
+    placeholders = ",".join("?" for _ in job_ids)
+    rows = conn.execute(
+        f"SELECT * FROM jobs WHERE id IN ({placeholders})", job_ids
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
