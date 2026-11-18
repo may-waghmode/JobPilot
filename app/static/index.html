@@ -6,135 +6,261 @@
   <title>JobPilot — AI Job Search</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    /* smooth loading pulse */
     @keyframes pulse-bg { 0%,100%{opacity:.6} 50%{opacity:.3} }
     .skeleton { animation: pulse-bg 1.5s ease-in-out infinite; }
+    .chat-bubble-user { background: #3b82f6; color: white; border-radius: 1rem 1rem 0.25rem 1rem; }
+    .chat-bubble-bot  { background: #f3f4f6; color: #1f2937; border-radius: 1rem 1rem 1rem 0.25rem; }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen font-sans">
-  <div class="max-w-4xl mx-auto px-4 py-10">
-    <!-- Header -->
-    <div class="text-center mb-10">
-      <h1 class="text-4xl font-bold text-gray-900 mb-2">🚀 JobPilot</h1>
-      <p class="text-gray-500 text-lg">AI-powered semantic job search</p>
+
+  <!-- Top Nav -->
+  <nav class="bg-white border-b shadow-sm sticky top-0 z-30">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+      <h1 class="text-2xl font-bold text-gray-900">🚀 JobPilot</h1>
+      <div class="flex gap-2">
+        <button onclick="showTab('search')" id="tabSearch"
+                class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-blue-100 text-blue-700">
+          🔍 Search
+        </button>
+        <button onclick="showTab('chat')" id="tabChat"
+                class="tab-btn px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-100">
+          💬 Chat
+        </button>
+        <label class="px-4 py-2 rounded-lg text-sm font-medium bg-green-50 text-green-700 cursor-pointer hover:bg-green-100 transition">
+          📄 Upload Resume
+          <input type="file" id="resumeFile" accept=".pdf" class="hidden" onchange="uploadResume()" />
+        </label>
+      </div>
+    </div>
+  </nav>
+
+  <div class="max-w-6xl mx-auto px-4 py-6">
+    <!-- Resume status banner -->
+    <div id="profileBanner" class="hidden mb-4 p-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-800"></div>
+
+    <!-- SEARCH TAB -->
+    <div id="searchPanel">
+      <form id="searchForm" class="bg-white rounded-2xl shadow-md p-6 mb-6">
+        <div class="flex flex-col md:flex-row gap-3 mb-4">
+          <input id="query" type="text" placeholder="e.g. machine learning engineer with PyTorch"
+                 class="flex-1 border border-gray-300 rounded-xl px-4 py-3 text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                 required />
+          <button type="submit"
+                  class="bg-blue-600 text-white font-semibold px-6 py-3 rounded-xl hover:bg-blue-700 transition">
+            Search
+          </button>
+        </div>
+        <div class="flex flex-wrap gap-4 text-sm text-gray-600">
+          <div>
+            <label class="block mb-1 font-medium">Location</label>
+            <select id="location" class="border rounded-lg px-3 py-2 bg-white">
+              <option value="">Any</option>
+              <option>Bengaluru</option><option>Gurugram</option>
+              <option>Pune</option><option>Hyderabad</option><option>Remote</option>
+            </select>
+          </div>
+          <div class="flex items-end gap-2">
+            <input id="remoteOnly" type="checkbox" class="w-4 h-4 accent-blue-600" />
+            <label for="remoteOnly" class="font-medium">Remote only</label>
+          </div>
+          <div>
+            <label class="block mb-1 font-medium">Max experience (yrs)</label>
+            <input id="maxExp" type="number" min="0" max="20" placeholder="—"
+                   class="border rounded-lg px-3 py-2 w-24 bg-white" />
+          </div>
+        </div>
+      </form>
+      <div id="searchResults"></div>
     </div>
 
-    <!-- Search form -->
-    <form id="searchForm" class="bg-white rounded-2xl shadow-md p-6 mb-8">
-      <div class="flex flex-col md:flex-row gap-3 mb-4">
-        <input id="query" type="text" placeholder="e.g. machine learning engineer with PyTorch"
-               class="flex-1 border border-gray-300 rounded-xl px-4 py-3 text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-               required />
-        <button type="submit"
-                class="bg-blue-600 text-white font-semibold px-6 py-3 rounded-xl hover:bg-blue-700 transition">
-          Search
-        </button>
-      </div>
-
-      <!-- Filters -->
-      <div class="flex flex-wrap gap-4 text-sm text-gray-600">
-        <div>
-          <label class="block mb-1 font-medium">Location</label>
-          <select id="location" class="border rounded-lg px-3 py-2 bg-white">
-            <option value="">Any</option>
-            <option>Bengaluru</option>
-            <option>Gurugram</option>
-            <option>Pune</option>
-            <option>Hyderabad</option>
-            <option>Remote</option>
-          </select>
+    <!-- CHAT TAB -->
+    <div id="chatPanel" class="hidden">
+      <div class="bg-white rounded-2xl shadow-md flex flex-col" style="height:calc(100vh - 200px)">
+        <!-- Messages -->
+        <div id="chatMessages" class="flex-1 overflow-y-auto p-4 space-y-3">
+          <div class="text-center text-gray-400 py-10">
+            <p class="text-4xl mb-2">💬</p>
+            <p>Ask me anything about jobs!</p>
+            <p class="text-xs mt-1">Try: "Find me backend roles in Bengaluru with Python"</p>
+          </div>
         </div>
-        <div class="flex items-end gap-2">
-          <input id="remoteOnly" type="checkbox" class="w-4 h-4 accent-blue-600" />
-          <label for="remoteOnly" class="font-medium">Remote only</label>
-        </div>
-        <div>
-          <label class="block mb-1 font-medium">Max experience (yrs)</label>
-          <input id="maxExp" type="number" min="0" max="20" placeholder="—"
-                 class="border rounded-lg px-3 py-2 w-24 bg-white" />
+        <!-- Recommended jobs area -->
+        <div id="chatJobs" class="border-t max-h-64 overflow-y-auto hidden"></div>
+        <!-- Input -->
+        <div class="border-t p-3">
+          <form id="chatForm" class="flex gap-2">
+            <input id="chatInput" type="text" placeholder="Ask JobPilot…"
+                   class="flex-1 border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+            <button type="submit"
+                    class="bg-blue-600 text-white font-semibold px-6 py-3 rounded-xl hover:bg-blue-700 transition">
+              Send
+            </button>
+          </form>
         </div>
       </div>
-    </form>
-
-    <!-- Results area -->
-    <div id="results"></div>
+    </div>
   </div>
 
-  <script>
-    const form = document.getElementById('searchForm');
-    const resultsDiv = document.getElementById('results');
+<script>
+// ── Tab switching ──────────────────────────────────────────────
+function showTab(tab) {
+  document.getElementById('searchPanel').classList.toggle('hidden', tab !== 'search');
+  document.getElementById('chatPanel').classList.toggle('hidden', tab !== 'chat');
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.remove('bg-blue-100','text-blue-700');
+    b.classList.add('text-gray-500');
+  });
+  const active = tab === 'search' ? 'tabSearch' : 'tabChat';
+  document.getElementById(active).classList.add('bg-blue-100','text-blue-700');
+  document.getElementById(active).classList.remove('text-gray-500');
+}
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const query = document.getElementById('query').value.trim();
-      if (!query) return;
+// ── Helpers ────────────────────────────────────────────────────
+function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 
-      // Loading skeleton
-      resultsDiv.innerHTML = Array.from({length:3}, ()=> `
-        <div class="bg-white rounded-xl shadow p-5 mb-4">
-          <div class="h-5 bg-gray-200 rounded w-2/3 mb-3 skeleton"></div>
-          <div class="h-4 bg-gray-200 rounded w-1/3 mb-2 skeleton"></div>
-          <div class="h-3 bg-gray-100 rounded w-full mb-1 skeleton"></div>
-          <div class="h-3 bg-gray-100 rounded w-5/6 skeleton"></div>
-        </div>`).join('');
+function jobCard(j) {
+  return `<div class="bg-white rounded-xl shadow hover:shadow-lg transition p-5 mb-3">
+    <div class="flex justify-between items-start mb-1">
+      <h2 class="text-lg font-semibold text-gray-900">${esc(j.title)}</h2>
+      <span class="text-xs font-mono px-2 py-1 rounded-full ${
+        j.similarity>0.6?'bg-green-100 text-green-700':
+        j.similarity>0.4?'bg-yellow-100 text-yellow-700':'bg-gray-100 text-gray-500'
+      }">${(j.similarity*100).toFixed(1)}%</span>
+    </div>
+    <p class="text-sm text-gray-500 mb-2">
+      ${esc(j.company)} · ${esc(j.location)}
+      ${j.is_remote?'<span class="ml-1 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Remote</span>':''}
+      · ${j.experience_years} yr${j.experience_years!==1?'s':''} exp
+    </p>
+    <p class="text-sm text-gray-600 mb-3 line-clamp-2">${esc(j.description)}</p>
+    <div class="flex flex-wrap gap-1">
+      ${j.skills.map(s=>`<span class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">${esc(s)}</span>`).join('')}
+    </div>
+  </div>`;
+}
 
-      const body = { query, top_k: 10 };
-      const loc = document.getElementById('location').value;
-      if (loc) body.location = loc;
-      if (document.getElementById('remoteOnly').checked) body.remote_only = true;
-      const maxExp = document.getElementById('maxExp').value;
-      if (maxExp !== '') body.max_experience = parseInt(maxExp, 10);
+function skeleton(n=3) {
+  return Array.from({length:n},()=>`
+    <div class="bg-white rounded-xl shadow p-5 mb-3">
+      <div class="h-5 bg-gray-200 rounded w-2/3 mb-3 skeleton"></div>
+      <div class="h-4 bg-gray-200 rounded w-1/3 mb-2 skeleton"></div>
+      <div class="h-3 bg-gray-100 rounded w-full mb-1 skeleton"></div>
+      <div class="h-3 bg-gray-100 rounded w-5/6 skeleton"></div>
+    </div>`).join('');
+}
 
-      try {
-        const res = await fetch('/search', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(body),
-        });
-        const data = await res.json();
+function emptyState(msg) {
+  return `<div class="text-center py-16 text-gray-400">
+    <p class="text-5xl mb-4">🔍</p>
+    <p class="text-lg">${msg}</p>
+    <p class="text-sm mt-1">Try broader terms or fewer filters.</p>
+  </div>`;
+}
 
-        if (!data.results || data.results.length === 0) {
-          resultsDiv.innerHTML = `
-            <div class="text-center py-16 text-gray-400">
-              <p class="text-5xl mb-4">🔍</p>
-              <p class="text-lg">No jobs found matching your query.</p>
-              <p class="text-sm mt-1">Try broader terms or fewer filters.</p>
-            </div>`;
-          return;
-        }
+// ── Search ─────────────────────────────────────────────────────
+document.getElementById('searchForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = document.getElementById('query').value.trim();
+  if (!q) return;
+  const el = document.getElementById('searchResults');
+  el.innerHTML = skeleton();
 
-        resultsDiv.innerHTML = `<p class="text-sm text-gray-500 mb-4">${data.count} result(s) for "<strong>${data.query}</strong>"</p>` +
-          data.results.map(j => `
-            <div class="bg-white rounded-xl shadow hover:shadow-lg transition p-5 mb-4">
-              <div class="flex justify-between items-start mb-1">
-                <h2 class="text-lg font-semibold text-gray-900">${esc(j.title)}</h2>
-                <span class="text-xs font-mono px-2 py-1 rounded-full ${
-                  j.similarity > 0.6 ? 'bg-green-100 text-green-700' :
-                  j.similarity > 0.4 ? 'bg-yellow-100 text-yellow-700' :
-                  'bg-gray-100 text-gray-500'
-                }">${(j.similarity * 100).toFixed(1)}%</span>
-              </div>
-              <p class="text-sm text-gray-500 mb-2">
-                ${esc(j.company)} · ${esc(j.location)}
-                ${j.is_remote ? '<span class="ml-1 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Remote</span>' : ''}
-                · ${j.experience_years} yr${j.experience_years !== 1 ? 's' : ''} exp
-              </p>
-              <p class="text-sm text-gray-600 mb-3 line-clamp-2">${esc(j.description)}</p>
-              <div class="flex flex-wrap gap-1">
-                ${j.skills.map(s => `<span class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">${esc(s)}</span>`).join('')}
-              </div>
-            </div>
-          `).join('');
-      } catch (err) {
-        resultsDiv.innerHTML = `<p class="text-red-500">Error: ${err.message}</p>`;
-      }
+  const body = { query: q, top_k: 10 };
+  const loc = document.getElementById('location').value;
+  if (loc) body.location = loc;
+  if (document.getElementById('remoteOnly').checked) body.remote_only = true;
+  const mx = document.getElementById('maxExp').value;
+  if (mx !== '') body.max_experience = parseInt(mx,10);
+
+  try {
+    const res = await fetch('/search', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+    const data = await res.json();
+    if (!data.results?.length) { el.innerHTML = emptyState('No jobs found matching your query.'); return; }
+    el.innerHTML = `<p class="text-sm text-gray-500 mb-4">${data.count} result(s) for "<strong>${esc(data.query)}</strong>"</p>`
+      + data.results.map(jobCard).join('');
+  } catch(err) { el.innerHTML = `<p class="text-red-500">Error: ${err.message}</p>`; }
+});
+
+// ── Chat ───────────────────────────────────────────────────────
+document.getElementById('chatForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('chatInput');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+
+  const msgsEl = document.getElementById('chatMessages');
+  const jobsEl = document.getElementById('chatJobs');
+
+  // User bubble
+  msgsEl.innerHTML += `<div class="flex justify-end"><div class="chat-bubble-user px-4 py-2 max-w-md text-sm">${esc(msg)}</div></div>`;
+  // Thinking indicator
+  msgsEl.innerHTML += `<div id="thinking" class="flex"><div class="chat-bubble-bot px-4 py-2 text-sm text-gray-400 skeleton">Thinking…</div></div>`;
+  msgsEl.scrollTop = msgsEl.scrollHeight;
+
+  try {
+    const res = await fetch('/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ message: msg, user_id: 'default' })
     });
+    const data = await res.json();
 
-    function esc(s) {
-      const d = document.createElement('div');
-      d.textContent = s;
-      return d.innerHTML;
+    // Remove thinking indicator
+    document.getElementById('thinking')?.remove();
+
+    // Tool calls info
+    let toolInfo = '';
+    if (data.tool_calls?.length) {
+      toolInfo = `<div class="text-xs text-gray-400 mt-1">🔧 ${data.tool_calls.map(t=>t.tool).join(', ')}</div>`;
     }
-  </script>
+
+    // Bot bubble
+    msgsEl.innerHTML += `<div class="flex"><div class="chat-bubble-bot px-4 py-2 max-w-lg text-sm">${esc(data.reply)}${toolInfo}</div></div>`;
+
+    // Recommended jobs
+    if (data.recommended_jobs?.length) {
+      jobsEl.classList.remove('hidden');
+      jobsEl.innerHTML = `<div class="p-3"><p class="text-xs font-semibold text-gray-500 mb-2">Recommended Jobs</p>`
+        + data.recommended_jobs.map(jobCard).join('') + '</div>';
+    }
+
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+  } catch(err) {
+    document.getElementById('thinking')?.remove();
+    msgsEl.innerHTML += `<div class="flex"><div class="chat-bubble-bot px-4 py-2 text-sm text-red-500">Error: ${err.message}</div></div>`;
+  }
+});
+
+// ── Resume Upload ──────────────────────────────────────────────
+async function uploadResume() {
+  const file = document.getElementById('resumeFile').files[0];
+  if (!file) return;
+
+  const banner = document.getElementById('profileBanner');
+  banner.classList.remove('hidden');
+  banner.textContent = '⏳ Uploading and parsing resume…';
+  banner.className = 'mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-xl text-sm text-yellow-800';
+
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('user_id', 'default');
+
+  try {
+    const res = await fetch('/profile/upload', { method:'POST', body: fd });
+    const data = await res.json();
+    if (res.ok) {
+      const p = data.profile;
+      banner.className = 'mb-4 p-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-800';
+      banner.innerHTML = `✅ <strong>Profile saved!</strong> Skills: ${p.skills.join(', ')} | Experience: ${p.years_experience} yrs | Roles: ${p.roles.join(', ')}`;
+    } else {
+      throw new Error(data.detail || 'Upload failed');
+    }
+  } catch(err) {
+    banner.className = 'mb-4 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-800';
+    banner.textContent = '❌ ' + err.message;
+  }
+}
+</script>
 </body>
 </html>
